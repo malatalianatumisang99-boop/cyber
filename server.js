@@ -619,6 +619,355 @@ app.get("/api/achievements", (req, res) => {
   });
 });
 
+// ========== SEARCH ROUTES ==========
+
+// Search modules by title or description
+app.get("/api/search/modules", (req, res) => {
+  const searchTerm = req.query.q;
+  
+  if (!searchTerm) {
+    return res.status(400).json({ error: "Search term is required" });
+  }
+
+  const query = `
+    SELECT * FROM modules 
+    WHERE (title_en LIKE ? OR title_st LIKE ? OR description_en LIKE ? OR description_st LIKE ?)
+    AND is_active = 1
+    ORDER BY 
+      CASE 
+        WHEN title_en LIKE ? THEN 1
+        WHEN title_st LIKE ? THEN 2
+        WHEN description_en LIKE ? THEN 3
+        ELSE 4
+      END
+  `;
+  
+  const searchValue = `%${searchTerm}%`;
+  
+  db.query(query, [
+    searchValue, searchValue, searchValue, searchValue,
+    searchValue, searchValue, searchValue
+  ], (err, results) => {
+    if (err) {
+      console.error('Search error:', err);
+      return res.status(500).json({ error: "Search failed" });
+    }
+    
+    res.json({
+      success: true,
+      query: searchTerm,
+      results: results,
+      count: results.length
+    });
+  });
+});
+
+// Search questions
+app.get("/api/search/questions", (req, res) => {
+  const searchTerm = req.query.q;
+  
+  if (!searchTerm) {
+    return res.status(400).json({ error: "Search term is required" });
+  }
+
+  const query = `
+    SELECT q.*, m.title_en as module_title, m.title_st as module_title_st
+    FROM questions q
+    LEFT JOIN modules m ON q.module_id = m.id
+    WHERE (q.question_en LIKE ? OR q.question_st LIKE ? OR q.explanation_en LIKE ? OR q.explanation_st LIKE ?)
+    ORDER BY q.module_id
+  `;
+  
+  const searchValue = `%${searchTerm}%`;
+  
+  db.query(query, [searchValue, searchValue, searchValue, searchValue], (err, results) => {
+    if (err) {
+      console.error('Search error:', err);
+      return res.status(500).json({ error: "Search failed" });
+    }
+    
+    res.json({
+      success: true,
+      query: searchTerm,
+      results: results,
+      count: results.length
+    });
+  });
+});
+
+// Search users
+app.get("/api/search/users", (req, res) => {
+  const searchTerm = req.query.q;
+  
+  if (!searchTerm) {
+    return res.status(400).json({ error: "Search term is required" });
+  }
+
+  const query = `
+    SELECT id, name, email, phone, business_type, role, created_at
+    FROM users 
+    WHERE (name LIKE ? OR email LIKE ? OR phone LIKE ? OR business_type LIKE ?)
+  `;
+  
+  const searchValue = `%${searchTerm}%`;
+  
+  db.query(query, [searchValue, searchValue, searchValue, searchValue], (err, results) => {
+    if (err) {
+      console.error('Search error:', err);
+      return res.status(500).json({ error: "Search failed" });
+    }
+    
+    res.json({
+      success: true,
+      query: searchTerm,
+      results: results,
+      count: results.length
+    });
+  });
+});
+
+// Universal search across multiple tables
+app.get("/api/search/all", (req, res) => {
+  const searchTerm = req.query.q;
+  
+  if (!searchTerm) {
+    return res.status(400).json({ error: "Search term is required" });
+  }
+
+  const searchValue = `%${searchTerm}%`;
+  
+  // Search multiple tables in parallel
+  const modulesQuery = `
+    SELECT 'module' as type, id, title_en as name, description_en as description, created_at
+    FROM modules 
+    WHERE (title_en LIKE ? OR description_en LIKE ?) AND is_active = 1
+    LIMIT 10
+  `;
+  
+  const questionsQuery = `
+    SELECT 'question' as type, q.id, q.question_en as name, q.explanation_en as description, q.created_at, m.title_en as module_name
+    FROM questions q
+    LEFT JOIN modules m ON q.module_id = m.id
+    WHERE q.question_en LIKE ? OR q.explanation_en LIKE ?
+    LIMIT 10
+  `;
+  
+  const categoriesQuery = `
+    SELECT 'category' as type, id, name_en as name, NULL as description, created_at
+    FROM content_categories 
+    WHERE name_en LIKE ?
+    LIMIT 5
+  `;
+
+  // Execute all queries
+  Promise.all([
+    new Promise((resolve) => db.query(modulesQuery, [searchValue, searchValue], (err, results) => resolve(results || []))),
+    new Promise((resolve) => db.query(questionsQuery, [searchValue, searchValue], (err, results) => resolve(results || []))),
+    new Promise((resolve) => db.query(categoriesQuery, [searchValue], (err, results) => resolve(results || [])))
+  ]).then(([modules, questions, categories]) => {
+    const allResults = [
+      ...modules.map(item => ({ ...item, type: 'module' })),
+      ...questions.map(item => ({ ...item, type: 'question' })),
+      ...categories.map(item => ({ ...item, type: 'category' }))
+    ];
+    
+    res.json({
+      success: true,
+      query: searchTerm,
+      results: allResults,
+      counts: {
+        modules: modules.length,
+        questions: questions.length,
+        categories: categories.length,
+        total: allResults.length
+      }
+    });
+  }).catch(error => {
+    console.error('Universal search error:', error);
+    res.status(500).json({ error: "Search failed" });
+  });
+});
+
+// Advanced search with filters
+app.get("/api/search/advanced", (req, res) => {
+  const { q, type, category, difficulty, limit = 20 } = req.query;
+  
+  if (!q) {
+    return res.status(400).json({ error: "Search term is required" });
+  }
+
+  let query = "";
+  let params = [];
+  const searchValue = `%${q}%`;
+
+  switch (type) {
+    case 'modules':
+      query = `
+        SELECT m.*, c.name_en as category_name, c.color as category_color
+        FROM modules m
+        LEFT JOIN content_categories c ON m.category_id = c.id
+        WHERE (m.title_en LIKE ? OR m.description_en LIKE ?)
+        ${category ? 'AND m.category_id = ?' : ''}
+        ${difficulty ? 'AND m.difficulty = ?' : ''}
+        AND m.is_active = 1
+        ORDER BY m.created_at DESC
+        LIMIT ?
+      `;
+      params = [searchValue, searchValue];
+      if (category) params.push(category);
+      if (difficulty) params.push(difficulty);
+      params.push(parseInt(limit));
+      break;
+
+    case 'questions':
+      query = `
+        SELECT q.*, m.title_en as module_title
+        FROM questions q
+        LEFT JOIN modules m ON q.module_id = m.id
+        WHERE (q.question_en LIKE ? OR q.explanation_en LIKE ?)
+        ${difficulty ? 'AND q.difficulty = ?' : ''}
+        ORDER BY q.created_at DESC
+        LIMIT ?
+      `;
+      params = [searchValue, searchValue];
+      if (difficulty) params.push(difficulty);
+      params.push(parseInt(limit));
+      break;
+
+    default:
+      return res.status(400).json({ error: "Invalid search type" });
+  }
+
+  db.query(query, params, (err, results) => {
+    if (err) {
+      console.error('Advanced search error:', err);
+      return res.status(500).json({ error: "Search failed" });
+    }
+    
+    res.json({
+      success: true,
+      query: q,
+      filters: { type, category, difficulty },
+      results: results,
+      count: results.length
+    });
+  });
+});
+
+
+// ========== ADMIN SEARCH ROUTES ==========
+
+// Admin search for users with pagination
+app.get("/api/admin/search/users", (req, res) => {
+  const { q, role, page = 1, limit = 20 } = req.query;
+  
+  const offset = (page - 1) * limit;
+  const searchValue = q ? `%${q}%` : '%';
+  
+  let query = `
+    SELECT id, name, email, phone, business_type, role, created_at, last_login
+    FROM users 
+    WHERE (name LIKE ? OR email LIKE ? OR phone LIKE ?)
+    ${role ? 'AND role = ?' : ''}
+    ORDER BY created_at DESC
+    LIMIT ? OFFSET ?
+  `;
+  
+  let countQuery = `
+    SELECT COUNT(*) as total
+    FROM users 
+    WHERE (name LIKE ? OR email LIKE ? OR phone LIKE ?)
+    ${role ? 'AND role = ?' : ''}
+  `;
+  
+  let params = [searchValue, searchValue, searchValue];
+  let countParams = [searchValue, searchValue, searchValue];
+  
+  if (role) {
+    params.push(role);
+    countParams.push(role);
+  }
+  
+  params.push(parseInt(limit), offset);
+  
+  // Get total count and results
+  db.query(countQuery, countParams, (countErr, countResults) => {
+    if (countErr) {
+      return res.status(500).json({ error: "Count query failed" });
+    }
+    
+    const total = countResults[0].total;
+    const totalPages = Math.ceil(total / limit);
+    
+    db.query(query, params, (err, results) => {
+      if (err) {
+        console.error('Admin user search error:', err);
+        return res.status(500).json({ error: "Search failed" });
+      }
+      
+      res.json({
+        success: true,
+        query: q,
+        filters: { role },
+        results: results,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          totalPages,
+          hasNext: page < totalPages,
+          hasPrev: page > 1
+        }
+      });
+    });
+  });
+});
+
+// Admin search for quiz results
+app.get("/api/admin/search/quiz-results", (req, res) => {
+  const { q, module, passed, page = 1, limit = 20 } = req.query;
+  
+  const offset = (page - 1) * limit;
+  const searchValue = q ? `%${q}%` : '%';
+  
+  let query = `
+    SELECT qr.*, u.name as user_name, u.email, m.title_en as module_title
+    FROM quiz_results qr
+    LEFT JOIN users u ON qr.user_id = u.id
+    LEFT JOIN modules m ON qr.module_id = m.id
+    WHERE (u.name LIKE ? OR u.email LIKE ? OR m.title_en LIKE ?)
+    ${module ? 'AND qr.module_id = ?' : ''}
+    ${passed !== undefined ? 'AND qr.passed = ?' : ''}
+    ORDER BY qr.taken_at DESC
+    LIMIT ? OFFSET ?
+  `;
+  
+  let params = [searchValue, searchValue, searchValue];
+  
+  if (module) params.push(module);
+  if (passed !== undefined) params.push(passed === 'true');
+  
+  params.push(parseInt(limit), offset);
+  
+  db.query(query, params, (err, results) => {
+    if (err) {
+      console.error('Admin quiz results search error:', err);
+      return res.status(500).json({ error: "Search failed" });
+    }
+    
+    res.json({
+      success: true,
+      query: q,
+      filters: { module, passed },
+      results: results,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit)
+      }
+    });
+  });
+});
+
 // ========== START SERVER ==========
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
