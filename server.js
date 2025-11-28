@@ -1594,6 +1594,626 @@ app.post("/api/admin/public/categories", (req, res) => {
 });
 
 
+// ========== USER PROGRESS ENDPOINTS ==========
+
+// Get user progress
+app.get("/api/user-progress/:userId", (req, res) => {
+  const userId = req.params.userId;
+  
+  const query = `
+    SELECT 
+      up.*, 
+      m.title_en, 
+      m.title_st, 
+      m.description_en, 
+      m.description_st, 
+      m.difficulty_level,
+      m.estimated_duration,
+      c.name_en as category_name,
+      c.color as category_color
+    FROM user_progress up
+    LEFT JOIN modules m ON up.module_id = m.id
+    LEFT JOIN content_categories c ON m.category_id = c.id
+    WHERE up.user_id = ?
+    ORDER BY up.updated_at DESC
+  `;
+  
+  db.query(query, [userId], (err, results) => {
+    if (err) {
+      console.error('Database error fetching user progress:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    
+    res.json(results);
+  });
+});
+
+// Update user progress
+app.post("/api/user-progress", (req, res) => {
+  const { user_id, module_id, completion_percentage } = req.body;
+  
+  console.log('🔄 SERVER: Received progress update:', { user_id, module_id, completion_percentage });
+  
+  if (!user_id || !module_id || completion_percentage === undefined) {
+    return res.status(400).json({ 
+      error: "User ID, Module ID, and completion percentage are required" 
+    });
+  }
+
+  // Check if progress record exists
+  const checkQuery = "SELECT * FROM user_progress WHERE user_id = ? AND module_id = ?";
+  
+  db.query(checkQuery, [user_id, module_id], (err, results) => {
+    if (err) {
+      console.error('Database error checking progress:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    
+    if (results.length > 0) {
+      // Update existing progress
+      const updateQuery = `
+        UPDATE user_progress 
+        SET completion_percentage = ?, updated_at = NOW(), last_accessed = NOW()
+        WHERE user_id = ? AND module_id = ?
+      `;
+      
+      db.query(updateQuery, [completion_percentage, user_id, module_id], (err, result) => {
+        if (err) {
+          console.error('Database error updating progress:', err);
+          return res.status(500).json({ error: "Failed to update progress" });
+        }
+        
+        res.json({ 
+          success: true,
+          message: "Progress updated successfully",
+          user_id,
+          module_id,
+          completion_percentage
+        });
+      });
+    } else {
+      // Create new progress record
+      const insertQuery = `
+        INSERT INTO user_progress (user_id, module_id, completion_percentage, created_at, updated_at, last_accessed) 
+        VALUES (?, ?, ?, NOW(), NOW(), NOW())
+      `;
+      
+      db.query(insertQuery, [user_id, module_id, completion_percentage], (err, result) => {
+        if (err) {
+          console.error('Database error creating progress:', err);
+          return res.status(500).json({ error: "Failed to create progress record" });
+        }
+        
+        res.json({ 
+          success: true,
+          message: "Progress created successfully",
+          id: result.insertId,
+          user_id,
+          module_id,
+          completion_percentage
+        });
+      });
+    }
+  });
+});
+
+// ========== QUIZ RESULTS ENDPOINTS ==========
+
+// Save quiz result with progress tracking
+app.post("/api/quiz-results", (req, res) => {
+  const { user_id, module_id, score, total_questions, time_spent = 0, correct_answers } = req.body;
+  
+  const passed = score >= 70;
+  const taken_at = new Date();
+  
+  const insertQuery = `
+    INSERT INTO quiz_results (user_id, module_id, score, total_questions, time_spent, passed, taken_at) 
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `;
+  
+  db.query(insertQuery, [user_id, module_id, score, total_questions, time_spent, passed, taken_at], (err, result) => {
+    if (err) {
+      console.error('Error saving quiz result:', err);
+      return res.status(500).json({ error: "Failed to save quiz result" });
+    }
+    
+    const quizResultId = result.insertId;
+    
+    // Update user progress based on quiz score
+    const completionPercentage = score >= 70 ? 100 : Math.max(50, score);
+    updateUserProgress(user_id, module_id, completionPercentage, (progressErr) => {
+      if (progressErr) {
+        console.error('Error updating progress:', progressErr);
+      }
+      
+      // Check for achievements
+      checkAchievements(user_id, module_id, score, (achievementErr, unlockedAchievements) => {
+        if (achievementErr) {
+          console.error('Error checking achievements:', achievementErr);
+        }
+        
+        res.json({
+          message: "Quiz result saved successfully",
+          id: quizResultId,
+          passed: passed,
+          unlocked_achievements: unlockedAchievements || []
+        });
+      });
+    });
+  });
+});
+
+// Get quiz results for a user
+app.get("/api/quiz-results/user/:userId", (req, res) => {
+  const userId = req.params.userId;
+  
+  const query = `
+    SELECT qr.*, m.title_en as module_title, m.title_st as module_title_st
+    FROM quiz_results qr
+    LEFT JOIN modules m ON qr.module_id = m.id
+    WHERE qr.user_id = ?
+    ORDER BY qr.taken_at DESC
+  `;
+  
+  db.query(query, [userId], (err, results) => {
+    if (err) {
+      console.error('Database error fetching quiz results:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    
+    res.json(results);
+  });
+});
+
+// Get detailed quiz result by ID
+app.get("/api/quiz-results/detail/:resultId", (req, res) => {
+  const resultId = req.params.resultId;
+  
+  const query = `
+    SELECT qr.*, m.title_en, m.title_st, m.description_en, m.description_st
+    FROM quiz_results qr
+    LEFT JOIN modules m ON qr.module_id = m.id
+    WHERE qr.id = ?
+  `;
+  
+  db.query(query, [resultId], (err, results) => {
+    if (err) {
+      console.error('Database error fetching quiz result detail:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    
+    if (results.length === 0) {
+      return res.status(404).json({ error: "Quiz result not found" });
+    }
+    
+    res.json(results[0]);
+  });
+});
+
+// Get quiz results for specific module
+app.get("/api/quiz-results/user/:userId/module/:moduleId", (req, res) => {
+  const { userId, moduleId } = req.params;
+  
+  const query = `
+    SELECT qr.*, m.title_en as module_title
+    FROM quiz_results qr
+    LEFT JOIN modules m ON qr.module_id = m.id
+    WHERE qr.user_id = ? AND qr.module_id = ?
+    ORDER BY qr.taken_at DESC
+  `;
+  
+  db.query(query, [userId, moduleId], (err, results) => {
+    if (err) {
+      console.error('Database error fetching module quiz results:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    
+    res.json(results);
+  });
+});
+
+// ========== ACHIEVEMENTS ENDPOINTS ==========
+
+// Get user achievements
+app.get("/api/user-achievements/:userId", (req, res) => {
+  const userId = req.params.userId;
+  
+  const query = `
+    SELECT ua.*, a.name_en, a.name_st, a.description_en, a.description_st, a.points, a.icon, a.category, a.rarity
+    FROM user_achievements ua
+    JOIN achievements a ON ua.achievement_id = a.id
+    WHERE ua.user_id = ?
+    ORDER BY ua.earned_at DESC
+  `;
+  
+  db.query(query, [userId], (err, results) => {
+    if (err) {
+      console.error('Database error fetching user achievements:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    
+    res.json(results);
+  });
+});
+
+// Unlock user achievement
+app.post("/api/user-achievements", (req, res) => {
+  const { user_id, achievement_id } = req.body;
+  
+  db.query(
+    "INSERT INTO user_achievements (user_id, achievement_id) VALUES (?, ?)",
+    [user_id, achievement_id],
+    (err, result) => {
+      if (err) {
+        console.error('Error unlocking achievement:', err);
+        return res.status(500).json({ error: "Failed to unlock achievement" });
+      }
+      
+      res.json({ 
+        success: true, 
+        message: "Achievement unlocked successfully",
+        id: result.insertId 
+      });
+    }
+  );
+});
+
+// ========== STREAK ENDPOINTS ==========
+
+// Get user streak
+app.get("/api/user-streak/:userId", (req, res) => {
+  const userId = req.params.userId;
+  
+  db.query("SELECT * FROM user_streaks WHERE user_id = ?", [userId], (err, results) => {
+    if (err) {
+      console.error('Database error fetching user streak:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    
+    if (results.length === 0) {
+      // Create streak record if it doesn't exist
+      db.query(
+        "INSERT INTO user_streaks (user_id, current_streak, max_streak, last_activity_date) VALUES (?, 5, 5, CURDATE())",
+        [userId],
+        (err, result) => {
+          if (err) {
+            return res.status(500).json({ error: "Failed to create streak" });
+          }
+          res.json({
+            id: result.insertId,
+            user_id: parseInt(userId),
+            current_streak: 5,
+            max_streak: 5,
+            last_activity_date: new Date().toISOString().split('T')[0],
+            is_frozen: 0,
+            freeze_until: null
+          });
+        }
+      );
+    } else {
+      res.json(results[0]);
+    }
+  });
+});
+
+// Update user streak
+app.post("/api/user-streak", (req, res) => {
+  const { user_id, activity_type, quiz_completed } = req.body;
+  const today = new Date().toISOString().split('T')[0];
+  
+  console.log('🔄 Streak update request:', { user_id, activity_type, quiz_completed, today });
+
+  // Get current streak
+  db.query("SELECT * FROM user_streaks WHERE user_id = ?", [user_id], (err, results) => {
+    if (err) {
+      console.error('Database error fetching streak:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    
+    if (results.length === 0) {
+      return res.status(404).json({ error: "Streak record not found" });
+    }
+
+    const streak = results[0];
+    let newStreak = streak.current_streak;
+    let newMaxStreak = streak.max_streak;
+    let isFrozen = streak.is_frozen;
+    let freezeUntil = streak.freeze_until;
+
+    // Check if user is frozen and if freeze period is over
+    if (isFrozen && freezeUntil && new Date() > new Date(freezeUntil)) {
+      isFrozen = 0;
+      freezeUntil = null;
+      newStreak = 1;
+    }
+
+    // If user is frozen and trying to take quiz, block them
+    if (isFrozen && activity_type === 'quiz_attempt') {
+      return res.json({
+        success: false,
+        message: "Streak is frozen. Complete learning activities to recover.",
+        current_streak: 0,
+        is_frozen: true,
+        freeze_until: freezeUntil
+      });
+    }
+
+    if (activity_type === 'quiz_completed' && quiz_completed) {
+      if (streak.last_activity_date === today) {
+        return res.json({
+          success: true,
+          message: "Activity already recorded today",
+          current_streak: newStreak,
+          max_streak: newMaxStreak,
+          is_frozen: isFrozen
+        });
+      }
+
+      const lastDate = new Date(streak.last_activity_date);
+      const currentDate = new Date(today);
+      const dayDiff = Math.floor((currentDate - lastDate) / (1000 * 60 * 60 * 24));
+
+      if (dayDiff === 1) {
+        newStreak = Math.min(streak.current_streak + 1, 5);
+      } else if (dayDiff > 1) {
+        newStreak = 1;
+      }
+
+      newMaxStreak = Math.max(newMaxStreak, newStreak);
+
+    } else if (activity_type === 'quiz_missed') {
+      newStreak = Math.max(0, streak.current_streak - 1);
+      
+      if (newStreak === 0) {
+        isFrozen = 1;
+        freezeUntil = new Date(Date.now() + 5 * 60 * 1000);
+      }
+    } else if (activity_type === 'learning_activity') {
+      if (isFrozen) {
+        newStreak = 1;
+        isFrozen = 0;
+        freezeUntil = null;
+      }
+    }
+
+    // Update streak
+    const updateQuery = `
+      UPDATE user_streaks 
+      SET current_streak = ?, max_streak = ?, last_activity_date = ?, is_frozen = ?, freeze_until = ?, updated_at = NOW()
+      WHERE user_id = ?
+    `;
+
+    db.query(updateQuery, [newStreak, newMaxStreak, today, isFrozen, freezeUntil, user_id], (err, result) => {
+      if (err) {
+        console.error('Error updating streak:', err);
+        return res.status(500).json({ error: "Failed to update streak" });
+      }
+
+      res.json({
+        success: true,
+        current_streak: newStreak,
+        max_streak: newMaxStreak,
+        is_frozen: isFrozen,
+        freeze_until: freezeUntil,
+        message: isFrozen ? 
+          `Streak frozen. Complete learning activities to recover in 5 minutes.` :
+          `Streak updated to ${newStreak}`
+      });
+    });
+  });
+});
+
+// ========== PROFILE & SETTINGS ENDPOINTS ==========
+
+// Update user profile
+app.put("/api/users/:id", (req, res) => {
+  const userId = req.params.id;
+  const { name, email, phone, business_type, language, text_size, high_contrast } = req.body;
+  
+  db.query(
+    "UPDATE users SET name = ?, email = ?, phone = ?, business_type = ?, language = ?, text_size = ?, high_contrast = ? WHERE id = ?",
+    [name, email, phone, business_type, language, text_size, high_contrast, userId],
+    (err, result) => {
+      if (err) {
+        console.error('Error updating profile:', err);
+        return res.status(500).json({ error: "Update failed" });
+      }
+      
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      
+      res.json({ success: true, message: "Profile updated successfully" });
+    }
+  );
+});
+
+// Change password
+app.put("/api/users/:id/password", (req, res) => {
+  const userId = req.params.id;
+  const { currentPassword, newPassword } = req.body;
+  
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: "Current and new password are required" });
+  }
+
+  // First verify current password
+  db.query("SELECT password FROM users WHERE id = ?", [userId], (err, results) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    
+    if (results.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const user = results[0];
+    
+    // Verify current password (simple comparison for now)
+    if (currentPassword !== user.password) {
+      return res.status(401).json({ error: "Current password is incorrect" });
+    }
+
+    // Update password
+    db.query(
+      "UPDATE users SET password = ? WHERE id = ?",
+      [newPassword, userId],
+      (err, result) => {
+        if (err) {
+          console.error('Error updating password:', err);
+          return res.status(500).json({ error: "Password update failed" });
+        }
+        
+        res.json({ success: true, message: "Password updated successfully" });
+      }
+    );
+  });
+});
+
+// ========== HELPER FUNCTIONS ==========
+
+// Helper function to update user progress
+function updateUserProgress(userId, moduleId, completionPercentage, callback) {
+  const checkQuery = "SELECT * FROM user_progress WHERE user_id = ? AND module_id = ?";
+  
+  db.query(checkQuery, [userId, moduleId], (err, results) => {
+    if (err) return callback(err);
+    
+    if (results.length > 0) {
+      const currentProgress = results[0];
+      const newPercentage = Math.max(currentProgress.completion_percentage, completionPercentage);
+      
+      const updateQuery = `
+        UPDATE user_progress 
+        SET completion_percentage = ?, last_accessed = NOW(), updated_at = NOW()
+        WHERE user_id = ? AND module_id = ?
+      `;
+      
+      db.query(updateQuery, [newPercentage, userId, moduleId], (err, result) => {
+        callback(err);
+      });
+    } else {
+      const insertQuery = `
+        INSERT INTO user_progress (user_id, module_id, completion_percentage, created_at, updated_at, last_accessed) 
+        VALUES (?, ?, ?, NOW(), NOW(), NOW())
+      `;
+      
+      db.query(insertQuery, [userId, moduleId, completionPercentage], (err, result) => {
+        callback(err);
+      });
+    }
+  });
+}
+
+// Helper function to check achievements
+function checkAchievements(userId, moduleId, quizScore, callback) {
+  const unlocked = [];
+  
+  // This is a simplified version - you can expand this based on your achievement logic
+  const achievementsQuery = `
+    SELECT * FROM achievements 
+    WHERE is_active = 1 
+    AND (criteria_type = 'modules_completed' OR criteria_type = 'perfect_scores')
+  `;
+  
+  db.query(achievementsQuery, (err, achievements) => {
+    if (err) return callback(err);
+    
+    let processed = 0;
+    
+    achievements.forEach(achievement => {
+      checkSingleAchievement(userId, moduleId, quizScore, achievement, (checkErr, shouldUnlock) => {
+        if (shouldUnlock) {
+          unlockAchievement(userId, achievement.id, (unlockErr) => {
+            if (!unlockErr) {
+              unlocked.push({
+                id: achievement.id,
+                name_en: achievement.name_en,
+                name_st: achievement.name_st,
+                description_en: achievement.description_en,
+                description_st: achievement.description_st,
+                points: achievement.points_reward
+              });
+            }
+            processed++;
+            if (processed === achievements.length) {
+              callback(null, unlocked);
+            }
+          });
+        } else {
+          processed++;
+          if (processed === achievements.length) {
+            callback(null, unlocked);
+          }
+        }
+      });
+    });
+    
+    if (achievements.length === 0) {
+      callback(null, []);
+    }
+  });
+}
+
+function checkSingleAchievement(userId, moduleId, quizScore, achievement, callback) {
+  const checkQuery = "SELECT * FROM user_achievements WHERE user_id = ? AND achievement_id = ?";
+  
+  db.query(checkQuery, [userId, achievement.id], (err, results) => {
+    if (err || results.length > 0) return callback(err, false);
+    
+    let shouldUnlock = false;
+    
+    switch (achievement.criteria_type) {
+      case 'perfect_scores':
+        if (quizScore === 100) shouldUnlock = true;
+        callback(null, shouldUnlock);
+        break;
+        
+      case 'modules_completed':
+        // Check if user has completed this module
+        const progressQuery = "SELECT * FROM user_progress WHERE user_id = ? AND module_id = ? AND completion_percentage = 100";
+        db.query(progressQuery, [userId, moduleId], (err, results) => {
+          if (!err && results.length > 0) shouldUnlock = true;
+          callback(null, shouldUnlock);
+        });
+        break;
+        
+      default:
+        callback(null, false);
+    }
+  });
+}
+
+function unlockAchievement(userId, achievementId, callback) {
+  const query = "INSERT INTO user_achievements (user_id, achievement_id, earned_at) VALUES (?, ?, NOW())";
+  db.query(query, [userId, achievementId], callback);
+}
+
+// ========== TEST ENDPOINTS ==========
+
+app.get("/api/test", (req, res) => {
+  res.json({ 
+    success: true, 
+    message: "API is working!",
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get("/api/test-db", (req, res) => {
+  db.query("SELECT 1 + 1 AS solution", (err, results) => {
+    if (err) {
+      res.json({ success: false, error: err.message });
+    } else {
+      res.json({ 
+        success: true, 
+        message: "Database connection working",
+        solution: results[0].solution 
+      });
+    }
+  });
+});
+
 // ========== START SERVER ==========
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
