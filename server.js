@@ -1599,34 +1599,68 @@ app.post("/api/admin/public/categories", (req, res) => {
 // ========== USER PROGRESS ENDPOINTS ==========
 
 // Get user progress
+// ========== USER PROGRESS ENDPOINTS ==========
+
+// Get user progress
 app.get("/api/user-progress/:userId", (req, res) => {
   const userId = req.params.userId;
   
-  const query = `
-    SELECT 
-      up.*, 
-      m.title_en, 
-      m.title_st, 
-      m.description_en, 
-      m.description_st, 
-      m.difficulty_level,
-      m.estimated_duration,
-      c.name_en as category_name,
-      c.color as category_color
-    FROM user_progress up
-    LEFT JOIN modules m ON up.module_id = m.id
-    LEFT JOIN content_categories c ON m.category_id = c.id
-    WHERE up.user_id = ?
-    ORDER BY up.updated_at DESC
+  console.log('📊 Fetching user progress for user:', userId);
+
+  // First check if user_progress table exists
+  const checkTableQuery = `
+    SELECT COUNT(*) as table_exists 
+    FROM information_schema.tables 
+    WHERE table_schema = ? AND table_name = 'user_progress'
   `;
-  
-  db.query(query, [userId], (err, results) => {
-    if (err) {
-      console.error('Database error fetching user progress:', err);
+
+  db.query(checkTableQuery, [dbConfig.database], (tableErr, tableResults) => {
+    if (tableErr) {
+      console.error('Error checking table existence:', tableErr);
       return res.status(500).json({ error: "Database error" });
     }
+
+    if (tableResults[0].table_exists === 0) {
+      console.log('❌ user_progress table does not exist');
+      // Return empty array if table doesn't exist
+      return res.json([]);
+    }
+
+    // Table exists, proceed with query
+    const query = `
+      SELECT 
+        up.*, 
+        m.title_en, 
+        m.title_st, 
+        m.description_en, 
+        m.description_st, 
+        m.difficulty as difficulty_level,
+        m.duration as estimated_duration,
+        c.name_en as category_name,
+        c.color as category_color
+      FROM user_progress up
+      LEFT JOIN modules m ON up.module_id = m.id
+      LEFT JOIN content_categories c ON m.category_id = c.id
+      WHERE up.user_id = ?
+      ORDER BY up.updated_at DESC
+    `;
     
-    res.json(results);
+    db.query(query, [userId], (err, results) => {
+      if (err) {
+        console.error('❌ Database error fetching user progress:', err);
+        
+        // If it's a table doesn't exist error, return empty array
+        if (err.code === 'ER_NO_SUCH_TABLE') {
+          console.log('Table does not exist, returning empty array');
+          return res.json([]);
+        }
+        
+        return res.status(500).json({ error: "Database error" });
+      }
+      
+      console.log(`✅ Found ${results.length} progress records for user ${userId}`);
+      res.json(results);
+    });
   });
 });
 
@@ -1642,63 +1676,85 @@ app.post("/api/user-progress", (req, res) => {
     });
   }
 
-  // Check if progress record exists
-  const checkQuery = "SELECT * FROM user_progress WHERE user_id = ? AND module_id = ?";
-  
-  db.query(checkQuery, [user_id, module_id], (err, results) => {
-    if (err) {
-      console.error('Database error checking progress:', err);
-      return res.status(500).json({ error: "Database error" });
+  // First ensure the table exists
+  const createTableQuery = `
+    CREATE TABLE IF NOT EXISTS user_progress (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      module_id INT NOT NULL,
+      completion_percentage INT NOT NULL DEFAULT 0,
+      last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY unique_user_module (user_id, module_id)
+    )
+  `;
+
+  db.query(createTableQuery, (createErr) => {
+    if (createErr) {
+      console.error('❌ Error creating user_progress table:', createErr);
+      return res.status(500).json({ error: "Database setup error" });
     }
+
+    // Check if progress record exists
+    const checkQuery = "SELECT * FROM user_progress WHERE user_id = ? AND module_id = ?";
     
-    if (results.length > 0) {
-      // Update existing progress
-      const updateQuery = `
-        UPDATE user_progress 
-        SET completion_percentage = ?, updated_at = NOW(), last_accessed = NOW()
-        WHERE user_id = ? AND module_id = ?
-      `;
+    db.query(checkQuery, [user_id, module_id], (err, results) => {
+      if (err) {
+        console.error('❌ Database error checking progress:', err);
+        return res.status(500).json({ error: "Database error" });
+      }
       
-      db.query(updateQuery, [completion_percentage, user_id, module_id], (err, result) => {
-        if (err) {
-          console.error('Database error updating progress:', err);
-          return res.status(500).json({ error: "Failed to update progress" });
-        }
+      if (results.length > 0) {
+        // Update existing progress
+        const updateQuery = `
+          UPDATE user_progress 
+          SET completion_percentage = ?, updated_at = NOW(), last_accessed = NOW()
+          WHERE user_id = ? AND module_id = ?
+        `;
         
-        res.json({ 
-          success: true,
-          message: "Progress updated successfully",
-          user_id,
-          module_id,
-          completion_percentage
+        db.query(updateQuery, [completion_percentage, user_id, module_id], (err, result) => {
+          if (err) {
+            console.error('❌ Database error updating progress:', err);
+            return res.status(500).json({ error: "Failed to update progress" });
+          }
+          
+          console.log('✅ Progress updated successfully');
+          res.json({ 
+            success: true,
+            message: "Progress updated successfully",
+            user_id,
+            module_id,
+            completion_percentage
+          });
         });
-      });
-    } else {
-      // Create new progress record
-      const insertQuery = `
-        INSERT INTO user_progress (user_id, module_id, completion_percentage, created_at, updated_at, last_accessed) 
-        VALUES (?, ?, ?, NOW(), NOW(), NOW())
-      `;
-      
-      db.query(insertQuery, [user_id, module_id, completion_percentage], (err, result) => {
-        if (err) {
-          console.error('Database error creating progress:', err);
-          return res.status(500).json({ error: "Failed to create progress record" });
-        }
+      } else {
+        // Create new progress record
+        const insertQuery = `
+          INSERT INTO user_progress (user_id, module_id, completion_percentage, created_at, updated_at, last_accessed) 
+          VALUES (?, ?, ?, NOW(), NOW(), NOW())
+        `;
         
-        res.json({ 
-          success: true,
-          message: "Progress created successfully",
-          id: result.insertId,
-          user_id,
-          module_id,
-          completion_percentage
+        db.query(insertQuery, [user_id, module_id, completion_percentage], (err, result) => {
+          if (err) {
+            console.error('❌ Database error creating progress:', err);
+            return res.status(500).json({ error: "Failed to create progress record" });
+          }
+          
+          console.log('✅ Progress created successfully with ID:', result.insertId);
+          res.json({ 
+            success: true,
+            message: "Progress created successfully",
+            id: result.insertId,
+            user_id,
+            module_id,
+            completion_percentage
+          });
         });
-      });
-    }
+      }
+    });
   });
 });
-
 // ========== QUIZ RESULTS ENDPOINTS ==========
 
 // Save quiz result with progress tracking
