@@ -2214,6 +2214,195 @@ app.get("/api/test-db", (req, res) => {
   });
 });
 
+// ========== HELPER FUNCTIONS ==========
+
+// Helper function to update user progress
+function updateUserProgress(userId, moduleId, completionPercentage, callback) {
+  console.log('🔄 HELPER: Updating user progress:', { userId, moduleId, completionPercentage });
+  
+  const checkQuery = "SELECT * FROM user_progress WHERE user_id = ? AND module_id = ?";
+  
+  db.query(checkQuery, [userId, moduleId], (err, results) => {
+    if (err) {
+      console.error('❌ HELPER: Error checking progress:', err);
+      return callback(err);
+    }
+    
+    if (results.length > 0) {
+      // Update existing progress - only improve the score
+      const currentProgress = results[0];
+      const newPercentage = Math.max(currentProgress.completion_percentage, completionPercentage);
+      
+      console.log('🔄 HELPER: Updating progress from', currentProgress.completion_percentage, 'to', newPercentage);
+      
+      const updateQuery = `
+        UPDATE user_progress 
+        SET completion_percentage = ?, last_accessed = NOW(), updated_at = NOW()
+        WHERE user_id = ? AND module_id = ?
+      `;
+      
+      db.query(updateQuery, [newPercentage, userId, moduleId], (err, result) => {
+        if (err) {
+          console.error('❌ HELPER: Error updating progress:', err);
+          return callback(err);
+        }
+        console.log('✅ HELPER: Progress updated successfully');
+        callback(null);
+      });
+    } else {
+      // Create new progress record
+      const insertQuery = `
+        INSERT INTO user_progress (user_id, module_id, completion_percentage, created_at, updated_at, last_accessed) 
+        VALUES (?, ?, ?, NOW(), NOW(), NOW())
+      `;
+      
+      console.log('🆕 HELPER: Creating new progress record');
+      db.query(insertQuery, [userId, moduleId, completionPercentage], (err, result) => {
+        if (err) {
+          console.error('❌ HELPER: Error creating progress:', err);
+          return callback(err);
+        }
+        console.log('✅ HELPER: Progress created successfully');
+        callback(null);
+      });
+    }
+  });
+}
+
+// Helper function to check achievements
+function checkAchievements(userId, moduleId, quizScore, callback) {
+  console.log('🎯 HELPER: Checking achievements for user:', userId, 'module:', moduleId, 'score:', quizScore);
+  
+  const unlocked = [];
+  
+  // Check for quiz-related achievements
+  const achievementsQuery = `
+    SELECT * FROM achievements 
+    WHERE is_active = 1 
+    AND (criteria_type = 'perfect_scores' OR criteria_type = 'modules_completed')
+  `;
+  
+  db.query(achievementsQuery, (err, achievements) => {
+    if (err) {
+      console.error('❌ HELPER: Error fetching achievements:', err);
+      return callback(err);
+    }
+    
+    console.log('📊 HELPER: Found', achievements.length, 'achievements to check');
+    
+    if (achievements.length === 0) {
+      return callback(null, []);
+    }
+    
+    let processed = 0;
+    
+    achievements.forEach(achievement => {
+      checkSingleAchievement(userId, moduleId, quizScore, achievement, (checkErr, shouldUnlock) => {
+        if (checkErr) {
+          console.error('❌ HELPER: Error checking single achievement:', checkErr);
+        }
+        
+        if (shouldUnlock) {
+          console.log('✅ HELPER: Unlocking achievement:', achievement.name_en);
+          unlockAchievement(userId, achievement.id, (unlockErr) => {
+            if (!unlockErr) {
+              unlocked.push({
+                id: achievement.id,
+                name_en: achievement.name_en,
+                name_st: achievement.name_st,
+                description_en: achievement.description_en,
+                description_st: achievement.description_st,
+                points: achievement.points_reward || 0
+              });
+              console.log('🏆 HELPER: Achievement unlocked successfully:', achievement.name_en);
+            } else {
+              console.error('❌ HELPER: Error unlocking achievement:', unlockErr);
+            }
+            processed++;
+            if (processed === achievements.length) {
+              console.log('✅ HELPER: All achievements processed, unlocked:', unlocked.length);
+              callback(null, unlocked);
+            }
+          });
+        } else {
+          processed++;
+          if (processed === achievements.length) {
+            console.log('✅ HELPER: All achievements processed, unlocked:', unlocked.length);
+            callback(null, unlocked);
+          }
+        }
+      });
+    });
+  });
+}
+
+function checkSingleAchievement(userId, moduleId, quizScore, achievement, callback) {
+  console.log('🔍 HELPER: Checking achievement:', achievement.name_en);
+  
+  // Check if user already has this achievement
+  const checkQuery = "SELECT * FROM user_achievements WHERE user_id = ? AND achievement_id = ?";
+  
+  db.query(checkQuery, [userId, achievement.id], (err, results) => {
+    if (err) {
+      console.error('❌ HELPER: Error checking user achievements:', err);
+      return callback(err, false);
+    }
+    
+    if (results.length > 0) {
+      console.log('ℹ️ HELPER: User already has achievement:', achievement.name_en);
+      return callback(null, false);
+    }
+    
+    let shouldUnlock = false;
+    
+    // Check achievement conditions
+    switch (achievement.criteria_type) {
+      case 'perfect_scores':
+        if (quizScore === 100) {
+          console.log('💯 HELPER: Perfect score achieved, unlocking achievement');
+          shouldUnlock = true;
+        }
+        callback(null, shouldUnlock);
+        break;
+        
+      case 'modules_completed':
+        // Check if user has completed this module (100% progress)
+        const progressQuery = "SELECT * FROM user_progress WHERE user_id = ? AND module_id = ? AND completion_percentage = 100";
+        db.query(progressQuery, [userId, moduleId], (err, results) => {
+          if (err) {
+            console.error('❌ HELPER: Error checking module completion:', err);
+            return callback(err, false);
+          }
+          
+          if (results.length > 0) {
+            console.log('✅ HELPER: Module completed, unlocking achievement');
+            shouldUnlock = true;
+          }
+          callback(null, shouldUnlock);
+        });
+        break;
+        
+      default:
+        console.log('ℹ️ HELPER: Unknown criteria type:', achievement.criteria_type);
+        callback(null, false);
+    }
+  });
+}
+
+function unlockAchievement(userId, achievementId, callback) {
+  console.log('🔓 HELPER: Unlocking achievement for user:', userId, 'achievement:', achievementId);
+  
+  const query = "INSERT INTO user_achievements (user_id, achievement_id, earned_at) VALUES (?, ?, NOW())";
+  db.query(query, [userId, achievementId], (err, result) => {
+    if (err) {
+      console.error('❌ HELPER: Error unlocking achievement:', err);
+      return callback(err);
+    }
+    console.log('✅ HELPER: Achievement unlocked successfully');
+    callback(null);
+  });
+}
+
 // ========== START SERVER ==========
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
