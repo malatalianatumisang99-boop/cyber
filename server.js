@@ -238,7 +238,7 @@ async function initializeDatabase() {
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY unique_user_module (user_id, module_id)
             );
-
+            
             -- Create user_sessions table
             CREATE TABLE IF NOT EXISTS user_sessions (
                 id INT AUTO_INCREMENT PRIMARY KEY,
