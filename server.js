@@ -968,6 +968,322 @@ app.get("/api/admin/search/quiz-results", (req, res) => {
   });
 });
 
+
+// ========== ADD THESE MISSING ADMIN ENDPOINTS ==========
+
+// Get all users (admin)
+app.get("/api/admin/public/users", (req, res) => {
+  db.query(`
+    SELECT 
+      id, name, email, phone, business_type, role, 
+      language, created_at, last_login
+    FROM users 
+    ORDER BY created_at DESC
+  `, (err, results) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    res.json({ success: true, users: results });
+  });
+});
+
+// Get all modules (admin)
+app.get("/api/admin/public/modules", (req, res) => {
+  db.query(`
+    SELECT m.*, c.name_en as category_name, c.color as category_color
+    FROM modules m
+    LEFT JOIN content_categories c ON m.category_id = c.id
+    ORDER BY m.created_at DESC
+  `, (err, results) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    res.json({ success: true, modules: results });
+  });
+});
+
+// Get all categories (admin)
+app.get("/api/admin/public/categories", (req, res) => {
+  db.query("SELECT * FROM content_categories ORDER BY created_at DESC", (err, results) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    res.json({ success: true, categories: results });
+  });
+});
+
+// Create module (admin)
+app.post("/api/admin/public/modules", (req, res) => {
+  const moduleData = req.body;
+  
+  console.log('Creating module:', moduleData);
+  
+  if (!moduleData.title_en) {
+    return res.status(400).json({ error: "English title is required" });
+  }
+
+  const completeModuleData = {
+    title_en: moduleData.title_en,
+    title_st: moduleData.title_st || '',
+    description_en: moduleData.description_en || '',
+    description_st: moduleData.description_st || '',
+    category_id: moduleData.category_id ? parseInt(moduleData.category_id) : null,
+    difficulty: moduleData.difficulty_level || 'beginner',
+    duration: parseInt(moduleData.estimated_duration) || 15,
+    is_active: moduleData.is_active !== undefined ? moduleData.is_active : true,
+    created_at: new Date(),
+    updated_at: new Date()
+  };
+
+  db.query("INSERT INTO modules SET ?", completeModuleData, (err, result) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Failed to create module" });
+    }
+    
+    res.json({ 
+      success: true, 
+      module: { id: result.insertId, ...completeModuleData } 
+    });
+  });
+});
+
+// Update module (admin)
+app.put("/api/admin/public/modules/:id", (req, res) => {
+  const moduleId = req.params.id;
+  const moduleData = req.body;
+  
+  moduleData.updated_at = new Date();
+  
+  db.query("UPDATE modules SET ? WHERE id = ?", [moduleData, moduleId], (err, result) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Failed to update module" });
+    }
+    
+    res.json({ success: true, message: "Module updated successfully" });
+  });
+});
+
+// Delete module (admin)
+app.delete("/api/admin/public/modules/:id", (req, res) => {
+  const moduleId = req.params.id;
+  
+  db.query("DELETE FROM modules WHERE id = ?", [moduleId], (err, result) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Failed to delete module" });
+    }
+    
+    res.json({ success: true, message: "Module deleted successfully" });
+  });
+});
+
+// Update user (admin)
+app.put("/api/admin/public/users/:id", (req, res) => {
+  const userId = req.params.id;
+  const { name, email, role, phone, business_type } = req.body;
+  
+  db.query(
+    "UPDATE users SET name = ?, email = ?, role = ?, phone = ?, business_type = ? WHERE id = ?",
+    [name, email, role, phone, business_type, userId],
+    (err, result) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: "Update failed" });
+      }
+      res.json({ success: true, message: "User updated successfully" });
+    }
+  );
+});
+
+// Delete user (admin)
+app.delete("/api/admin/public/users/:id", (req, res) => {
+  const userId = req.params.id;
+  
+  db.query("DELETE FROM users WHERE id = ?", [userId], (err, result) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Delete failed" });
+    }
+    
+    res.json({ success: true, message: "User deleted successfully" });
+  });
+});
+
+// Create category (admin)
+app.post("/api/admin/public/categories", (req, res) => {
+  const { name_en, name_st, color, icon } = req.body;
+  
+  if (!name_en) {
+    return res.status(400).json({ error: "English name is required" });
+  }
+
+  const categoryData = {
+    name_en: name_en,
+    name_st: name_st || '',
+    color: color || '#0026ff',
+    icon: icon || '📚',
+    created_at: new Date()
+  };
+
+  db.query("INSERT INTO content_categories SET ?", categoryData, (err, result) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Failed to create category" });
+    }
+    
+    res.json({ 
+      success: true, 
+      category: { id: result.insertId, ...categoryData } 
+    });
+  });
+});
+
+// Update category (admin)
+app.put("/api/admin/public/categories/:id", (req, res) => {
+  const categoryId = req.params.id;
+  const { name_en, name_st, color, icon } = req.body;
+
+  const updateData = {
+    name_en: name_en,
+    name_st: name_st || '',
+    color: color || '#0026ff',
+    icon: icon || '📚'
+  };
+
+  db.query("UPDATE content_categories SET ? WHERE id = ?", [updateData, categoryId], (err, result) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Update failed" });
+    }
+    
+    res.json({ success: true, message: "Category updated successfully" });
+  });
+});
+
+// Delete category (admin)
+app.delete("/api/admin/public/categories/:id", (req, res) => {
+  const categoryId = req.params.id;
+  
+  db.query("DELETE FROM content_categories WHERE id = ?", [categoryId], (err, result) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Delete failed" });
+    }
+    
+    res.json({ success: true, message: "Category deleted successfully" });
+  });
+});
+
+
+// Module content endpoints
+app.get("/api/admin/public/module-content/:moduleId", (req, res) => {
+  const moduleId = req.params.moduleId;
+  db.query("SELECT * FROM module_content WHERE module_id = ? ORDER BY display_order", [moduleId], (err, results) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    res.json({ success: true, content: results });
+  });
+});
+
+app.post("/api/admin/public/module-content", (req, res) => {
+  const contentData = req.body;
+  
+  db.query("INSERT INTO module_content SET ?", contentData, (err, result) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Failed to create content" });
+    }
+    
+    res.json({ success: true, content: { id: result.insertId, ...contentData } });
+  });
+});
+
+app.put("/api/admin/public/module-content/:id", (req, res) => {
+  const contentId = req.params.id;
+  const contentData = req.body;
+
+  db.query("UPDATE module_content SET ? WHERE id = ?", [contentData, contentId], (err, result) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Update failed" });
+    }
+    
+    res.json({ success: true, message: "Content updated successfully" });
+  });
+});
+
+app.delete("/api/admin/public/module-content/:id", (req, res) => {
+  const contentId = req.params.id;
+  
+  db.query("DELETE FROM module_content WHERE id = ?", [contentId], (err, result) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Delete failed" });
+    }
+    
+    res.json({ success: true, message: "Content deleted successfully" });
+  });
+});
+
+// Questions endpoints
+app.get("/api/admin/public/questions/:moduleId", (req, res) => {
+  const moduleId = req.params.moduleId;
+  db.query("SELECT * FROM questions WHERE module_id = ?", [moduleId], (err, results) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    res.json({ success: true, questions: results });
+  });
+});
+
+app.post("/api/admin/public/questions", (req, res) => {
+  const questionData = req.body;
+  
+  db.query("INSERT INTO questions SET ?", questionData, (err, result) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Failed to create question" });
+    }
+    
+    res.json({ success: true, question: { id: result.insertId, ...questionData } });
+  });
+});
+
+app.put("/api/admin/public/questions/:id", (req, res) => {
+  const questionId = req.params.id;
+  const questionData = req.body;
+
+  db.query("UPDATE questions SET ? WHERE id = ?", [questionData, questionId], (err, result) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Update failed" });
+    }
+    
+    res.json({ success: true, message: "Question updated successfully" });
+  });
+});
+
+app.delete("/api/admin/public/questions/:id", (req, res) => {
+  const questionId = req.params.id;
+  
+  db.query("DELETE FROM questions WHERE id = ?", [questionId], (err, result) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Delete failed" });
+    }
+    
+    res.json({ success: true, message: "Question deleted successfully" });
+  });
+});
+
 // ========== START SERVER ==========
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
