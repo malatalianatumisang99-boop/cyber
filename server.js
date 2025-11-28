@@ -1425,6 +1425,7 @@ app.post("/api/auth/signup", (req, res) => {
 });
 
 // Enhanced module creation with better error handling
+// Fix the module creation endpoint
 app.post("/api/admin/public/modules", (req, res) => {
   const moduleData = req.body;
   
@@ -1432,7 +1433,10 @@ app.post("/api/admin/public/modules", (req, res) => {
   
   // Validate required fields
   if (!moduleData.title_en) {
-    return res.status(400).json({ error: "English title is required" });
+    return res.status(400).json({ 
+      success: false,
+      error: "English title is required" 
+    });
   }
 
   // Prepare module data with defaults
@@ -1455,6 +1459,7 @@ app.post("/api/admin/public/modules", (req, res) => {
     if (err) {
       console.error('❌ Database error creating module:', err);
       return res.status(500).json({ 
+        success: false,
         error: "Failed to create module",
         details: err.message 
       });
@@ -1474,59 +1479,86 @@ app.post("/api/admin/public/modules", (req, res) => {
         // Still return success but without category info
         return res.json({ 
           success: true, 
-          module: { id: result.insertId, ...completeModuleData } 
+          module: { 
+            id: result.insertId, 
+            ...completeModuleData,
+            category_name: null,
+            category_color: null
+          } 
         });
       }
       
+      const createdModule = moduleResults[0] || { 
+        id: result.insertId, 
+        ...completeModuleData,
+        category_name: null,
+        category_color: null
+      };
+      
+      console.log('✅ Returning created module:', createdModule);
+      
       res.json({ 
         success: true, 
-        module: moduleResults[0] || { id: result.insertId, ...completeModuleData } 
+        module: createdModule 
       });
     });
   });
 });
-
 // Enhanced user update endpoint
-app.put("/api/admin/public/users/:id", (req, res) => {
-  const userId = req.params.id;
-  const { name, email, role, phone, business_type } = req.body;
+// Fix the update module endpoint
+app.put("/api/admin/public/modules/:id", (req, res) => {
+  const moduleId = req.params.id;
+  const moduleData = req.body;
   
-  console.log('Updating user:', userId, { name, email, role });
+  console.log('Updating module:', moduleId, moduleData);
   
-  if (!name || !email || !role) {
-    return res.status(400).json({ error: "Name, email, and role are required" });
-  }
-
+  // Add updated_at timestamp
   const updateData = {
-    name,
-    email,
-    role,
-    phone: phone || null,
-    business_type: business_type || null,
+    ...moduleData,
     updated_at: new Date()
   };
 
-  db.query("UPDATE users SET ? WHERE id = ?", [updateData, userId], (err, result) => {
+  db.query("UPDATE modules SET ? WHERE id = ?", [updateData, moduleId], (err, result) => {
     if (err) {
-      console.error('Database error updating user:', err);
+      console.error('Database error updating module:', err);
       return res.status(500).json({ 
-        error: "Update failed",
+        success: false,
+        error: "Failed to update module",
         details: err.message 
       });
     }
     
     if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({ 
+        success: false,
+        error: "Module not found" 
+      });
     }
     
-    res.json({ 
-      success: true, 
-      message: "User updated successfully",
-      user: { id: parseInt(userId), ...updateData }
+    console.log('Module updated successfully');
+    
+    db.query(`
+      SELECT m.*, c.name_en as category_name, c.color as category_color
+      FROM modules m
+      LEFT JOIN content_categories c ON m.category_id = c.id
+      WHERE m.id = ?
+    `, [moduleId], (err, moduleResults) => {
+      if (err) {
+        console.error('Error fetching updated module:', err);
+        return res.json({ 
+          success: true, 
+          message: "Module updated successfully" 
+        });
+      }
+      
+      res.json({ 
+        success: true, 
+        message: "Module updated successfully",
+        module: moduleResults[0] 
+      });
     });
   });
 });
-
 // Enhanced category creation
 app.post("/api/admin/public/categories", (req, res) => {
   const { name_en, name_st, color, icon } = req.body;
