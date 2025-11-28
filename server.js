@@ -1284,6 +1284,299 @@ app.delete("/api/admin/public/questions/:id", (req, res) => {
   });
 });
 
+// ========== ADD THESE MISSING ENDPOINTS FOR ADMIN ==========
+
+// Create admin user
+app.post("/api/admin/public/create-admin", (req, res) => {
+  const { name, email, password } = req.body;
+  
+  console.log('Creating admin:', { name, email });
+  
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: "Name, email, and password are required" });
+  }
+
+  // Check if user already exists
+  db.query("SELECT id FROM users WHERE email = ?", [email], (err, results) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    
+    if (results.length > 0) {
+      return res.status(409).json({ error: "User already exists with this email" });
+    }
+
+    // Create new admin user
+    const newAdmin = {
+      name,
+      email,
+      password: password, // Store plain text for now
+      role: 'admin',
+      language: 'en',
+      daily_reminder_enabled: 1,
+      reminder_time: '19:00:00',
+      push_notifications: 1,
+      text_size: 'medium',
+      high_contrast: 0,
+      created_at: new Date()
+    };
+    
+    db.query("INSERT INTO users SET ?", newAdmin, (err, result) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: "Failed to create admin" });
+      }
+      
+      res.json({
+        success: true,
+        admin: {
+          id: result.insertId,
+          name: newAdmin.name,
+          email: newAdmin.email,
+          role: newAdmin.role
+        }
+      });
+    });
+  });
+});
+
+// Create regular user (signup endpoint)
+app.post("/api/auth/signup", (req, res) => {
+  const { name, email, password, phone, business_type } = req.body;
+  
+  console.log('Creating user:', { name, email });
+  
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: "Name, email, and password are required" });
+  }
+
+  // Check if user already exists
+  db.query("SELECT id FROM users WHERE email = ?", [email], (err, results) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: "Database error" });
+    }
+    
+    if (results.length > 0) {
+      return res.status(409).json({ error: "User already exists with this email" });
+    }
+
+    // Create new user
+    const newUser = {
+      name,
+      email,
+      password: password,
+      phone: phone || null,
+      business_type: business_type || null,
+      role: 'user',
+      language: 'en',
+      daily_reminder_enabled: 1,
+      reminder_time: '19:00:00',
+      push_notifications: 1,
+      text_size: 'medium',
+      high_contrast: 0,
+      created_at: new Date()
+    };
+
+    db.query("INSERT INTO users SET ?", newUser, (err, result) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: "Failed to create user" });
+      }
+      
+      const userId = result.insertId;
+      
+      // Get the created user
+      db.query("SELECT * FROM users WHERE id = ?", [userId], (err, userResults) => {
+        if (err || userResults.length === 0) {
+          console.error('Error fetching created user:', err);
+          return res.status(500).json({ error: "User created but failed to retrieve data" });
+        }
+        
+        const user = userResults[0];
+        const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
+        
+        // Return user data without password
+        const userResponse = {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          business_type: user.business_type,
+          role: user.role,
+          language: user.language,
+          daily_reminder_enabled: user.daily_reminder_enabled,
+          reminder_time: user.reminder_time,
+          push_notifications: user.push_notifications,
+          text_size: user.text_size,
+          high_contrast: user.high_contrast,
+          created_at: user.created_at
+        };
+        
+        res.json({
+          success: true,
+          user: userResponse,
+          token
+        });
+      });
+    });
+  });
+});
+
+// Enhanced module creation with better error handling
+app.post("/api/admin/public/modules", (req, res) => {
+  const moduleData = req.body;
+  
+  console.log('📝 Creating module with data:', moduleData);
+  
+  // Validate required fields
+  if (!moduleData.title_en) {
+    return res.status(400).json({ error: "English title is required" });
+  }
+
+  // Prepare module data with defaults
+  const completeModuleData = {
+    title_en: moduleData.title_en,
+    title_st: moduleData.title_st || '',
+    description_en: moduleData.description_en || '',
+    description_st: moduleData.description_st || '',
+    category_id: moduleData.category_id ? parseInt(moduleData.category_id) : null,
+    difficulty: moduleData.difficulty_level || moduleData.difficulty || 'beginner',
+    duration: parseInt(moduleData.estimated_duration) || 15,
+    is_active: moduleData.is_active !== undefined ? moduleData.is_active : true,
+    created_at: new Date(),
+    updated_at: new Date()
+  };
+
+  console.log('✅ Prepared module data:', completeModuleData);
+
+  db.query("INSERT INTO modules SET ?", completeModuleData, (err, result) => {
+    if (err) {
+      console.error('❌ Database error creating module:', err);
+      return res.status(500).json({ 
+        error: "Failed to create module",
+        details: err.message 
+      });
+    }
+    
+    console.log('✅ Module created successfully with ID:', result.insertId);
+    
+    // Get the created module with category info
+    db.query(`
+      SELECT m.*, c.name_en as category_name, c.color as category_color
+      FROM modules m
+      LEFT JOIN content_categories c ON m.category_id = c.id
+      WHERE m.id = ?
+    `, [result.insertId], (err, moduleResults) => {
+      if (err) {
+        console.error('Error fetching created module:', err);
+        // Still return success but without category info
+        return res.json({ 
+          success: true, 
+          module: { id: result.insertId, ...completeModuleData } 
+        });
+      }
+      
+      res.json({ 
+        success: true, 
+        module: moduleResults[0] || { id: result.insertId, ...completeModuleData } 
+      });
+    });
+  });
+});
+
+// Enhanced user update endpoint
+app.put("/api/admin/public/users/:id", (req, res) => {
+  const userId = req.params.id;
+  const { name, email, role, phone, business_type } = req.body;
+  
+  console.log('Updating user:', userId, { name, email, role });
+  
+  if (!name || !email || !role) {
+    return res.status(400).json({ error: "Name, email, and role are required" });
+  }
+
+  const updateData = {
+    name,
+    email,
+    role,
+    phone: phone || null,
+    business_type: business_type || null,
+    updated_at: new Date()
+  };
+
+  db.query("UPDATE users SET ? WHERE id = ?", [updateData, userId], (err, result) => {
+    if (err) {
+      console.error('Database error updating user:', err);
+      return res.status(500).json({ 
+        error: "Update failed",
+        details: err.message 
+      });
+    }
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    
+    res.json({ 
+      success: true, 
+      message: "User updated successfully",
+      user: { id: parseInt(userId), ...updateData }
+    });
+  });
+});
+
+// Enhanced category creation
+app.post("/api/admin/public/categories", (req, res) => {
+  const { name_en, name_st, color, icon } = req.body;
+  
+  console.log('Creating category:', { name_en, name_st, color, icon });
+  
+  if (!name_en) {
+    return res.status(400).json({ error: "English name is required" });
+  }
+
+  const categoryData = {
+    name_en: name_en,
+    name_st: name_st || '',
+    color: color || '#0026ff',
+    icon: icon || '📚',
+    created_at: new Date()
+  };
+
+  db.query("INSERT INTO content_categories SET ?", categoryData, (err, result) => {
+    if (err) {
+      console.error('Database error creating category:', err);
+      return res.status(500).json({ 
+        error: "Failed to create category",
+        details: err.message 
+      });
+    }
+    
+    res.json({ 
+      success: true, 
+      category: { id: result.insertId, ...categoryData } 
+    });
+  });
+});
+
+// Add CORS headers for all responses
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  next();
+});
+
+// Handle preflight requests
+app.options('*', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.sendStatus(200);
+});
+
 // ========== START SERVER ==========
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
