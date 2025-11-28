@@ -1871,49 +1871,166 @@ app.get("/api/quiz-results/user/:userId/module/:moduleId", (req, res) => {
 });
 
 // ========== ACHIEVEMENTS ENDPOINTS ==========
+// ========== USER ACHIEVEMENTS ENDPOINTS ==========
 
 // Get user achievements
 app.get("/api/user-achievements/:userId", (req, res) => {
   const userId = req.params.userId;
   
-  const query = `
-    SELECT ua.*, a.name_en, a.name_st, a.description_en, a.description_st, a.points, a.icon, a.category, a.rarity
-    FROM user_achievements ua
-    JOIN achievements a ON ua.achievement_id = a.id
-    WHERE ua.user_id = ?
-    ORDER BY ua.earned_at DESC
-  `;
-  
-  db.query(query, [userId], (err, results) => {
-    if (err) {
-      console.error('Error fetching user achievements:', err);
-      return res.status(500).json({ error: "Database error" });
-    }
+  console.log('🏆 Fetching user achievements for user:', userId);
+
+  // First ensure the tables exist
+  const createTablesQueries = [
+    `CREATE TABLE IF NOT EXISTS achievements (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      name_en VARCHAR(255) NOT NULL,
+      name_st VARCHAR(255),
+      description_en TEXT,
+      description_st TEXT,
+      icon VARCHAR(50) DEFAULT '🏆',
+      points INT DEFAULT 10,
+      category VARCHAR(50) DEFAULT 'general',
+      rarity VARCHAR(50) DEFAULT 'common',
+      criteria_type VARCHAR(50),
+      criteria_value INT DEFAULT 1,
+      progress_type VARCHAR(50),
+      is_active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
     
-    res.json(results);
-  });
+    `CREATE TABLE IF NOT EXISTS user_achievements (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      achievement_id INT NOT NULL,
+      earned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY unique_user_achievement (user_id, achievement_id)
+    )`
+  ];
+
+  // Execute table creation queries sequentially
+  const executeQueries = (queries, index = 0) => {
+    if (index >= queries.length) {
+      // Tables created, now query user achievements
+      const query = `
+        SELECT 
+          ua.*, 
+          a.name_en, 
+          a.name_st, 
+          a.description_en, 
+          a.description_st, 
+          a.icon, 
+          a.points, 
+          a.category, 
+          a.rarity
+        FROM user_achievements ua
+        LEFT JOIN achievements a ON ua.achievement_id = a.id
+        WHERE ua.user_id = ?
+        ORDER BY ua.earned_at DESC
+      `;
+      
+      db.query(query, [userId], (err, results) => {
+        if (err) {
+          console.error('❌ Database error fetching user achievements:', err);
+          return res.status(500).json({ error: "Database error" });
+        }
+        
+        console.log(`✅ Found ${results.length} achievements for user ${userId}`);
+        res.json(results);
+      });
+      return;
+    }
+
+    db.query(queries[index], (err) => {
+      if (err) {
+        console.error(`❌ Error creating table ${index}:`, err);
+        // Continue with next query even if some fail
+      }
+      executeQueries(queries, index + 1);
+    });
+  };
+
+  executeQueries(createTablesQueries);
 });
 
 // Unlock user achievement
 app.post("/api/user-achievements", (req, res) => {
   const { user_id, achievement_id } = req.body;
   
-  db.query(
-    "INSERT INTO user_achievements (user_id, achievement_id) VALUES (?, ?)",
-    [user_id, achievement_id],
-    (err, result) => {
-      if (err) {
-        console.error('Error unlocking achievement:', err);
-        return res.status(500).json({ error: "Failed to unlock achievement" });
-      }
-      
-      res.json({ 
-        success: true, 
-        message: "Achievement unlocked successfully",
-        id: result.insertId 
+  console.log('🔓 Unlocking achievement:', { user_id, achievement_id });
+
+  if (!user_id || !achievement_id) {
+    return res.status(400).json({ 
+      success: false,
+      error: "User ID and Achievement ID are required" 
+    });
+  }
+
+  // First ensure tables exist
+  const createTableQuery = `
+    CREATE TABLE IF NOT EXISTS user_achievements (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      achievement_id INT NOT NULL,
+      earned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY unique_user_achievement (user_id, achievement_id)
+    )
+  `;
+
+  db.query(createTableQuery, (createErr) => {
+    if (createErr) {
+      console.error('❌ Error creating user_achievements table:', createErr);
+      return res.status(500).json({ 
+        success: false,
+        error: "Database setup error" 
       });
     }
-  );
+
+    // Check if achievement already unlocked
+    const checkQuery = "SELECT * FROM user_achievements WHERE user_id = ? AND achievement_id = ?";
+    
+    db.query(checkQuery, [user_id, achievement_id], (err, results) => {
+      if (err) {
+        console.error('❌ Database error checking achievement:', err);
+        return res.status(500).json({ 
+          success: false,
+          error: "Database error" 
+        });
+      }
+      
+      if (results.length > 0) {
+        return res.json({ 
+          success: true, 
+          message: "Achievement already unlocked",
+          already_unlocked: true 
+        });
+      }
+
+      // Unlock achievement
+      const insertQuery = `
+        INSERT INTO user_achievements (user_id, achievement_id, earned_at) 
+        VALUES (?, ?, NOW())
+      `;
+      
+      db.query(insertQuery, [user_id, achievement_id], (err, result) => {
+        if (err) {
+          console.error('❌ Database error unlocking achievement:', err);
+          return res.status(500).json({ 
+            success: false,
+            error: "Failed to unlock achievement" 
+          });
+        }
+        
+        console.log('✅ Achievement unlocked successfully with ID:', result.insertId);
+        res.json({ 
+          success: true, 
+          message: "Achievement unlocked successfully",
+          id: result.insertId 
+        });
+      });
+    });
+  });
 });
 
 // ========== STREAK ENDPOINTS ==========
