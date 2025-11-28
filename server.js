@@ -227,7 +227,7 @@ async function initializeDatabase() {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
-            -- Create user_progress table
+            // Update the user_progress table creation
             CREATE TABLE IF NOT EXISTS user_progress (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 user_id INT NOT NULL,
@@ -1596,9 +1596,13 @@ app.post("/api/admin/public/categories", (req, res) => {
 
 // ========== USER PROGRESS ENDPOINTS ==========
 
-// Get user progress
+// ========== USER PROGRESS ENDPOINTS ==========
+
+// Get user progress with module details
 app.get("/api/user-progress/:userId", (req, res) => {
   const userId = req.params.userId;
+  
+  console.log('📊 API: Fetching progress for user:', userId);
   
   const query = `
     SELECT 
@@ -1607,8 +1611,8 @@ app.get("/api/user-progress/:userId", (req, res) => {
       m.title_st, 
       m.description_en, 
       m.description_st, 
-      m.difficulty_level,
-      m.estimated_duration,
+      m.difficulty as difficulty_level,
+      m.duration as estimated_duration,
       c.name_en as category_name,
       c.color as category_color
     FROM user_progress up
@@ -1620,10 +1624,11 @@ app.get("/api/user-progress/:userId", (req, res) => {
   
   db.query(query, [userId], (err, results) => {
     if (err) {
-      console.error('Database error fetching user progress:', err);
+      console.error('❌ API: Database error fetching user progress:', err);
       return res.status(500).json({ error: "Database error" });
     }
     
+    console.log(`✅ API: Found ${results.length} progress records for user ${userId}`);
     res.json(results);
   });
 });
@@ -1632,10 +1637,18 @@ app.get("/api/user-progress/:userId", (req, res) => {
 app.post("/api/user-progress", (req, res) => {
   const { user_id, module_id, completion_percentage } = req.body;
   
-  console.log('🔄 SERVER: Received progress update:', { user_id, module_id, completion_percentage });
+  console.log('🔄 API: Received progress update request:', {
+    user_id,
+    module_id, 
+    completion_percentage,
+    body: req.body
+  });
   
+  // Validate required fields
   if (!user_id || !module_id || completion_percentage === undefined) {
+    console.log('❌ API: Missing required fields');
     return res.status(400).json({ 
+      success: false,
       error: "User ID, Module ID, and completion percentage are required" 
     });
   }
@@ -1643,11 +1656,17 @@ app.post("/api/user-progress", (req, res) => {
   // Check if progress record exists
   const checkQuery = "SELECT * FROM user_progress WHERE user_id = ? AND module_id = ?";
   
+  console.log('📊 API: Checking existing progress...');
   db.query(checkQuery, [user_id, module_id], (err, results) => {
     if (err) {
-      console.error('Database error checking progress:', err);
-      return res.status(500).json({ error: "Database error" });
+      console.error('❌ API: Database error checking progress:', err);
+      return res.status(500).json({ 
+        success: false,
+        error: "Database error" 
+      });
     }
+    
+    console.log('📊 API: Existing progress found:', results.length);
     
     if (results.length > 0) {
       // Update existing progress
@@ -1657,12 +1676,17 @@ app.post("/api/user-progress", (req, res) => {
         WHERE user_id = ? AND module_id = ?
       `;
       
+      console.log('🔄 API: Updating existing progress...');
       db.query(updateQuery, [completion_percentage, user_id, module_id], (err, result) => {
         if (err) {
-          console.error('Database error updating progress:', err);
-          return res.status(500).json({ error: "Failed to update progress" });
+          console.error('❌ API: Database error updating progress:', err);
+          return res.status(500).json({ 
+            success: false,
+            error: "Failed to update progress" 
+          });
         }
         
+        console.log('✅ API: Progress updated successfully, affected rows:', result.affectedRows);
         res.json({ 
           success: true,
           message: "Progress updated successfully",
@@ -1678,12 +1702,17 @@ app.post("/api/user-progress", (req, res) => {
         VALUES (?, ?, ?, NOW(), NOW(), NOW())
       `;
       
+      console.log('🆕 API: Creating new progress record...');
       db.query(insertQuery, [user_id, module_id, completion_percentage], (err, result) => {
         if (err) {
-          console.error('Database error creating progress:', err);
-          return res.status(500).json({ error: "Failed to create progress record" });
+          console.error('❌ API: Database error creating progress:', err);
+          return res.status(500).json({ 
+            success: false,
+            error: "Failed to create progress record" 
+          });
         }
         
+        console.log('✅ API: Progress created successfully with ID:', result.insertId);
         res.json({ 
           success: true,
           message: "Progress created successfully",
@@ -1696,7 +1725,6 @@ app.post("/api/user-progress", (req, res) => {
     }
   });
 });
-
 // ========== QUIZ RESULTS ENDPOINTS ==========
 
 // Save quiz result with progress tracking
