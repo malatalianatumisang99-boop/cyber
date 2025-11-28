@@ -228,7 +228,7 @@ async function initializeDatabase() {
             );
 
             // Update the user_progress table creation
-            CREATE TABLE IF NOT EXISTS user_progress (
+             CREATE TABLE IF NOT EXISTS user_progress (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 user_id INT NOT NULL,
                 module_id INT NOT NULL,
